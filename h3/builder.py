@@ -128,13 +128,21 @@ def cells_for_polygon(polygon: Polygon, resolution: int) -> set[int]:
     """
     Return the set of H3 cell IDs (as integers) covering a Shapely Polygon
     at the given resolution.
+
+    Uses centroid-in-polygon (h3shape_to_cells) plus cells that contain each
+    polygon vertex, so boundary cells whose centroid falls just outside the
+    polygon (e.g. in a waterway for a narrow coastal peninsula) are included.
     """
     h3poly = shapely_to_h3poly(polygon)
     try:
-        return {cell_to_int(c) for c in h3.h3shape_to_cells(h3poly, resolution)}
+        cells = {cell_to_int(c) for c in h3.h3shape_to_cells(h3poly, resolution)}
     except Exception:
-        # Degenerate or out-of-range polygons — skip silently
-        return set()
+        cells = set()
+    # Add cells containing each polygon vertex to capture boundary cells
+    # whose centroid falls outside (e.g. in water for coastal polygons).
+    for x, y in polygon.exterior.coords[:-1]:
+        cells.add(cell_to_int(h3.latlng_to_cell(y, x, resolution)))
+    return cells
 
 
 # ---------------------------------------------------------------------------

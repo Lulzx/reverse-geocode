@@ -266,6 +266,13 @@ def process_polygon(
         )
         return [], []
 
+    # Also add cells containing each polygon vertex so that boundary cells
+    # whose centroid falls just outside (e.g. in water for coastal polygons)
+    # are captured at the coarse level.
+    for poly in mp.geoms:
+        for x, y in poly.exterior.coords[:-1]:
+            cells_res6.add(h3.latlng_to_cell(y, x, H3_RES_COARSE))
+
     coarse_records: List[Tuple[int, str, str, str]] = [
         (h3str_to_encoded(c, H3_RES_COARSE), country, adm1, adm2)
         for c in cells_res6
@@ -279,6 +286,10 @@ def process_polygon(
             "h3shape_to_cells res7 failed for %s/%s/%s: %s", country, adm1, adm2, exc
         )
         return coarse_records, []
+
+    for poly in mp.geoms:
+        for x, y in poly.exterior.coords[:-1]:
+            cells_res7.add(h3.latlng_to_cell(y, x, H3_RES_FINE))
 
     fine_records: List[Tuple[int, str, str, str]] = []
     for cell7_str in cells_res7:
