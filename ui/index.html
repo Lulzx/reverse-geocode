@@ -38,24 +38,79 @@
       text-transform: uppercase;
     }
     .s-cards {
-      display: flex; gap: 1.2rem; flex-wrap: wrap; justify-content: center;
+      display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center;
+      padding: 0 1rem;
     }
     #selector button {
       display: flex; flex-direction: column;
       align-items: flex-start;
-      padding: 1.4rem 2rem;
+      padding: 1.5rem 1.6rem 1.3rem;
       background: none;
       border: 1px solid #1a1a1a;
       color: #888;
       cursor: pointer;
-      transition: border-color .15s, color .15s;
+      transition: border-color .15s, background .15s;
       text-align: left;
-      min-width: 130px;
+      width: 220px;
+      gap: 0;
     }
-    #selector button:hover { border-color: #444; color: #fff; }
-    #selector button .s-name { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.5px; margin-bottom: 0.35rem; }
-    #selector button .s-desc { font-size: 0.7rem; color: #333; font-family: 'SF Mono', 'Menlo', monospace; }
-    #selector button:hover .s-desc { color: #555; }
+    #selector button:hover { border-color: #383838; background: #080808; }
+
+    #selector button .s-name {
+      font-size: 1.6rem; font-weight: 700; letter-spacing: -0.5px;
+      color: #ddd; margin-bottom: 0.15rem;
+      transition: color .15s;
+    }
+    #selector button:hover .s-name { color: #fff; }
+
+    #selector button .s-method {
+      font-size: 0.68rem; color: #333; font-family: 'SF Mono', 'Menlo', monospace;
+      margin-bottom: 1.1rem; letter-spacing: 0.02em;
+      transition: color .15s;
+    }
+    #selector button:hover .s-method { color: #555; }
+
+    /* divider */
+    #selector button .s-div {
+      width: 100%; height: 1px; background: #111;
+      margin-bottom: 1rem;
+    }
+
+    /* stat rows */
+    #selector button .s-stats {
+      width: 100%; display: flex; flex-direction: column; gap: 0.42rem;
+    }
+    #selector button .s-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    #selector button .s-label {
+      font-size: 0.65rem; color: #333; text-transform: uppercase;
+      letter-spacing: 0.08em; font-family: 'SF Mono', 'Menlo', monospace;
+      transition: color .15s;
+    }
+    #selector button:hover .s-label { color: #555; }
+    #selector button .s-val {
+      font-size: 0.72rem; color: #666; font-family: 'SF Mono', 'Menlo', monospace;
+      transition: color .15s;
+    }
+    #selector button:hover .s-val { color: #999; }
+    #selector button .s-val.hi { color: #3d8 !important; }
+    #selector button .s-val.lo { color: #666; }
+
+    /* tag badge */
+    #selector button .s-tag {
+      margin-top: 1.1rem;
+      font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase;
+      color: #1a3a2a; border: 1px solid #1a3a2a;
+      padding: 0.15rem 0.45rem;
+      font-family: 'SF Mono', 'Menlo', monospace;
+      transition: color .15s, border-color .15s;
+    }
+    #selector button:hover .s-tag { color: #3d8; border-color: #3d8; }
+    #selector button .s-tag.plain {
+      color: #222; border-color: #222;
+    }
+    #selector button:hover .s-tag.plain { color: #555; border-color: #555; }
 
     /* ── Loading screen ───────────────────────────────────────────────── */
     #loading {
@@ -94,15 +149,45 @@
     <div class="s-cards">
       <button data-geo="z0">
         <span class="s-name">Z0</span>
-        <span class="s-desc">Morton · RGEO0002</span>
+        <span class="s-method">Morton Z-order · RGEO0003</span>
+        <div class="s-div"></div>
+        <div class="s-stats">
+          <div class="s-row"><span class="s-label">Index size</span><span class="s-val hi">20 MB</span></div>
+          <div class="s-row"><span class="s-label">Interior</span><span class="s-val">~1.6 µs</span></div>
+          <div class="s-row"><span class="s-label">Boundary</span><span class="s-val">~2.4 µs</span></div>
+          <div class="s-row"><span class="s-label">Ocean</span><span class="s-val hi">~0.4 µs</span></div>
+          <div class="s-row"><span class="s-label">Data level</span><span class="s-val hi">ADM5</span></div>
+          <div class="s-row"><span class="s-label">JS BigInt</span><span class="s-val hi">no</span></div>
+        </div>
+        <span class="s-tag">finest · villages &amp; suburbs</span>
       </button>
       <button data-geo="s2">
         <span class="s-name">S2</span>
-        <span class="s-desc">H3 cells · RGEO0001</span>
+        <span class="s-method">S2 cells · RGEO0001</span>
+        <div class="s-div"></div>
+        <div class="s-stats">
+          <div class="s-row"><span class="s-label">Index size</span><span class="s-val lo">27 MB</span></div>
+          <div class="s-row"><span class="s-label">Interior</span><span class="s-val">~1.9 µs</span></div>
+          <div class="s-row"><span class="s-label">Boundary</span><span class="s-val hi">~1.9 µs</span></div>
+          <div class="s-row"><span class="s-label">Ocean</span><span class="s-val lo">~2.6 µs</span></div>
+          <div class="s-row"><span class="s-label">Data level</span><span class="s-val lo">ADM2</span></div>
+          <div class="s-row"><span class="s-label">JS BigInt</span><span class="s-val hi">no</span></div>
+        </div>
+        <span class="s-tag plain">consistent · no BigInt</span>
       </button>
       <button data-geo="h3">
         <span class="s-name">H3</span>
-        <span class="s-desc">H3 cells · LKHA0001</span>
+        <span class="s-method">H3 hexagons · LKHA0001</span>
+        <div class="s-div"></div>
+        <div class="s-stats">
+          <div class="s-row"><span class="s-label">Index size</span><span class="s-val hi">13 MB</span></div>
+          <div class="s-row"><span class="s-label">Interior</span><span class="s-val hi">~1.6 µs</span></div>
+          <div class="s-row"><span class="s-label">Boundary</span><span class="s-val lo">~2.7 µs</span></div>
+          <div class="s-row"><span class="s-label">Ocean</span><span class="s-val lo">~3.5 µs</span></div>
+          <div class="s-row"><span class="s-label">Data level</span><span class="s-val lo">ADM2</span></div>
+          <div class="s-row"><span class="s-label">JS BigInt</span><span class="s-val lo">yes</span></div>
+        </div>
+        <span class="s-tag plain">smallest · res 6→5→4 fallback</span>
       </button>
     </div>
   </div>
