@@ -177,12 +177,7 @@ function attach() {
   });
   map.addLayer({
     id: 'dividers', type: 'line', source: 'adm2',
-    minzoom: 4,
-    paint: {
-      'line-color': '#000',
-      'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.15, 8, 0.5],
-      'line-opacity': ['interpolate', ['linear'], ['zoom'], 4, 0.25, 8, 0.7],
-    },
+    paint: { 'line-color': '#000', 'line-width': 0.4, 'line-opacity': 0.7 },
   });
   map.addLayer({
     id: 'hl', type: 'fill', source: 'adm2',
