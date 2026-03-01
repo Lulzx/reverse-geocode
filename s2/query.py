@@ -69,7 +69,7 @@ H3_RES_FINE       = 7
 RECORDS_PER_BLOCK = 10
 RECORD_SIZE       = 6    # uint32 cell_id + uint16 admin_id
 BLOCK_SIZE        = 64   # bytes — one cache line
-ADMIN_ENTRY_SIZE  = 5    # uint8 country_idx + uint16 adm1_idx + uint16 adm2_idx
+ADMIN_ENTRY_SIZE  = 6    # uint16 country_idx + uint16 adm1_idx + uint16 adm2_idx
 HEADER_SIZE       = 64   # bytes
 
 
@@ -197,7 +197,7 @@ class ReverseGeocoder:
     def _lookup_admin(self, admin_id: int) -> Dict[str, str]:
         """Resolve a uint16 admin_id to a {'country', 'adm1', 'adm2'} dict."""
         off = self._admin_off + admin_id * ADMIN_ENTRY_SIZE
-        c_idx, a1_idx, a2_idx = struct.unpack_from("<BHH", self._mm, off)
+        c_idx, a1_idx, a2_idx = struct.unpack_from("<HHH", self._mm, off)
         return {
             "country": self._countries[c_idx],
             "adm1":    self._adm1s[a1_idx],

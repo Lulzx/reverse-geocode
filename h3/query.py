@@ -54,10 +54,12 @@ RES_COARSEST = 4
 # ---------------------------------------------------------------------------
 
 def unpack_meta(packed: int) -> tuple[int, int, int]:
-    """Decompose a packed uint32 into (country_id, state_offset, district_offset)."""
-    country_id      = (packed >> 24) & 0xFF
-    state_offset    = (packed >> 16) & 0xFF
-    district_offset =  packed        & 0xFFFF
+    """Decompose a packed uint32 into (country_id, state_offset, district_offset).
+    Bits 31-22: country_id (10 bits), bits 21-14: state (8 bits), bits 13-0: district (14 bits).
+    """
+    country_id      = (packed >> 22) & 0x3FF
+    state_offset    = (packed >> 14) & 0xFF
+    district_offset =  packed        & 0x3FFF
     return country_id, state_offset, district_offset
 
 

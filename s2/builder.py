@@ -38,7 +38,7 @@ File layout (all integers little-endian, 64-byte aligned):
           L10 directory    (uint32 array, first cell_id of each block)
           L12 block array
           L12 directory
-          Admin lookup table  (N × 5 bytes: uint8 country_idx, uint16 adm1_idx, uint16 adm2_idx)
+          Admin lookup table  (N × 6 bytes: uint16 country_idx, uint16 adm1_idx, uint16 adm2_idx)
           Name table          (zstd-compressed JSON)
 
 Usage:
@@ -48,18 +48,18 @@ Usage:
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 import struct
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 
 import h3
 import zstandard as zstd
 from shapely.geometry import (
     MultiPolygon,
-    Point,
     Polygon,
-    mapping,
     shape,
 )
 from shapely.ops import unary_union
@@ -153,7 +153,7 @@ class AdminRegistry:
         if key in self._triple_to_id:
             return self._triple_to_id[key]
         admin_id = len(self._triple_to_id)
-        if admin_id > 65535:
+        if admin_id >= 65535:
             raise ValueError(f"Admin ID overflow at {admin_id}: {key}")
         self._triple_to_id[key] = admin_id
         c_idx  = self._intern(self._countries, self._country_idx, country)
@@ -167,10 +167,10 @@ class AdminRegistry:
         return len(self._triples)
 
     def admin_table_bytes(self) -> bytes:
-        """Serialise as count × 5 bytes (uint8 LE, uint16 LE, uint16 LE)."""
+        """Serialise as count × 6 bytes (uint16 LE, uint16 LE, uint16 LE)."""
         buf = bytearray()
         for c_idx, a1_idx, a2_idx in self._triples:
-            buf += struct.pack("<BHH", c_idx, a1_idx, a2_idx)
+            buf += struct.pack("<HHH", c_idx, a1_idx, a2_idx)
         return bytes(buf)
 
     def name_table_json(self) -> bytes:
@@ -237,24 +237,14 @@ def process_polygon(
     """
     Classify H3 cells for a single ADM2 polygon.
 
-    Algorithm (mirrors spec §6 build pipeline):
+    Coarse table (res-6 / L10):
+      All res-6 cells whose centroid falls within the polygon
+      (h3shape_to_cells centroid-in-polygon).
 
-    Coarse table (res-6 / L10) — interior cells:
-      1. Compute H3 res-6 covering via h3shape_to_cells.
-      2. For each covered res-6 cell whose full polygon is geometrically
-         contained within the ADM2 polygon → emit to coarse table.
-
-    Fine table (res-7 / L12) — boundary cells:
-      H3's h3shape_to_cells uses centroid-in-polygon for inclusion, so some
-      res-6 cells near the polygon edge are excluded even though they
-      physically intersect the polygon.  Their res-7 children would then be
-      silently missed if we relied only on refinement of covered res-6 cells.
-
-      To guarantee complete coverage, we compute the res-7 covering directly
-      via h3shape_to_cells at res-7.  We then exclude any res-7 cell that is
-      a child of a res-6 INTERIOR cell (those are already in the coarse table
-      and do not need fine-level entries).  The remaining res-7 cells are
-      emitted to the fine table.
+    Fine table (res-7 / L12):
+      All res-7 cells whose centroid falls within the polygon AND whose
+      res-6 parent is NOT in the coarse set (boundary coverage for areas
+      not covered by the coarse table).
 
     Returns:
       coarse_records: list of (encoded_res6, country, adm1, adm2)
@@ -267,7 +257,7 @@ def process_polygon(
 
     h3shape = _geom_to_h3shape(mp)
 
-    # ── Step 1: Compute res-6 covering ──────────────────────────────────────
+    # ── Coarse: all res-6 cells whose centroid is in the polygon ────────────
     try:
         cells_res6 = set(h3.h3shape_to_cells(h3shape, H3_RES_COARSE))
     except Exception as exc:
@@ -276,25 +266,12 @@ def process_polygon(
         )
         return [], []
 
-    coarse_records: List[Tuple[int, str, str, str]] = []
-    interior_cells6: set = set()  # res-6 cells classified as interior
+    coarse_records: List[Tuple[int, str, str, str]] = [
+        (h3str_to_encoded(c, H3_RES_COARSE), country, adm1, adm2)
+        for c in cells_res6
+    ]
 
-    # ── Step 2: Classify each res-6 cell ────────────────────────────────────
-    for cell_str in cells_res6:
-        cell_poly = _cell_polygon(cell_str)
-        if mp.contains(cell_poly):
-            # Interior: entire cell lies within the polygon
-            enc = h3str_to_encoded(cell_str, H3_RES_COARSE)
-            coarse_records.append((enc, country, adm1, adm2))
-            interior_cells6.add(cell_str)
-        # Boundary cells (straddle polygon edge) are handled at res-7 below.
-
-    # ── Step 3: Compute res-7 covering for boundary regions ─────────────────
-    # We directly cover the polygon at res-7 to handle all boundary cases,
-    # including res-7 cells whose res-6 parent was not returned by
-    # h3shape_to_cells (because h3shape_to_cells uses centroid-in-polygon
-    # and can exclude res-6 cells whose centroid is outside the polygon but
-    # which still overlap it physically).
+    # ── Fine: res-7 cells not already covered by a coarse parent ────────────
     try:
         cells_res7 = set(h3.h3shape_to_cells(h3shape, H3_RES_FINE))
     except Exception as exc:
@@ -306,11 +283,8 @@ def process_polygon(
     fine_records: List[Tuple[int, str, str, str]] = []
     for cell7_str in cells_res7:
         parent6 = h3.cell_to_parent(cell7_str, H3_RES_COARSE)
-        if parent6 in interior_cells6:
-            # Parent is a fully-interior res-6 cell; the coarse table covers this
-            # point already and no fine entry is needed.
-            continue
-        # Boundary res-7 cell: include in fine table.
+        if parent6 in cells_res6:
+            continue  # coarse table already covers this area
         enc = h3str_to_encoded(cell7_str, H3_RES_FINE)
         fine_records.append((enc, country, adm1, adm2))
 
@@ -366,11 +340,11 @@ COUNTRY_KEYS = [
     "NAME_0", "name_0", "ISO_A2", "GID_0", "ADMIN",
 ]
 ADM1_KEYS = [
-    "ADM1_NAME", "admin1Name", "NAME_1", "name_1",
+    "adm1", "ADM1_NAME", "admin1Name", "NAME_1", "name_1",
     "GID_1", "ADM1", "shapeName",
 ]
 ADM2_KEYS = [
-    "ADM2_NAME", "admin2Name", "NAME_2", "name_2",
+    "adm2", "ADM2_NAME", "admin2Name", "NAME_2", "name_2",
     "GID_2", "ADM2", "shapeName",
 ]
 
@@ -403,7 +377,19 @@ def load_geojson_features(path: str) -> List[dict]:
 
 # ── Main build pipeline ──────────────────────────────────────────────────────
 
-def build(geojson_path: str, output_path: str) -> None:
+def _process_feature(args):
+    """Worker function for parallel processing (top-level for pickling)."""
+    feat, country, adm1, adm2 = args
+    geom_d = feat.get("geometry")
+    if geom_d is None:
+        return [], []
+    try:
+        return process_polygon(geom_d, country, adm1, adm2)
+    except Exception:
+        return [], []
+
+
+def build(geojson_path: str, output_path: str, workers: int = 0) -> None:
     """
     Full build pipeline:
       1. Ingest source polygons.
@@ -423,38 +409,51 @@ def build(geojson_path: str, output_path: str) -> None:
     total = len(features)
     log.info("Processing %d features...", total)
 
-    try:
-        from tqdm import tqdm as _tqdm
-        _iter = _tqdm(enumerate(features, 1), total=total, desc="  S2/H3 cells", unit="feat")
-    except ImportError:
-        _iter = enumerate(features, 1)
-    for done, feat in _iter:
+    if workers == 0:
+        workers = min(multiprocessing.cpu_count(), 8)
+    log.info("Using %d workers", workers)
+
+    # Prepare work items
+    work_items = []
+    for feat in features:
         props   = feat.get("properties") or {}
         country = _pick(props, COUNTRY_KEYS)
         adm1    = _pick(props, ADM1_KEYS)
         adm2    = _pick(props, ADM2_KEYS)
-        geom_d  = feat.get("geometry")
-        if geom_d is None:
-            continue
+        work_items.append((feat, country, adm1, adm2))
 
-        try:
-            cr, fr = process_polygon(geom_d, country, adm1, adm2)
-        except Exception as exc:
-            log.warning("Skipping %s/%s/%s: %s", country, adm1, adm2, exc)
-            continue
+    done = 0
+    try:
+        from tqdm import tqdm as _tqdm
+        pbar = _tqdm(total=total, desc="  S2/H3 cells", unit="feat")
+    except ImportError:
+        pbar = None
 
-        admin_id = registry.get_or_create(country, adm1, adm2)
-
-        for enc, *_ in cr:
-            seen_coarse[enc] = admin_id
-        for enc, *_ in fr:
-            seen_fine[enc] = admin_id
-
-        if done % 1000 == 0 or done == total:
-            log.info(
-                "  %d/%d features  (coarse=%d  fine=%d)",
-                done, total, len(seen_coarse), len(seen_fine),
-            )
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        chunk = 200
+        for start in range(0, total, chunk):
+            batch = work_items[start:start + chunk]
+            results = list(executor.map(_process_feature, batch))
+            for (feat, country, adm1, adm2), (cr, fr) in zip(batch, results):
+                admin_id = registry.get_or_create(country, adm1, adm2)
+                for enc, *_ in cr:
+                    seen_coarse[enc] = admin_id
+                for enc, *_ in fr:
+                    seen_fine[enc] = admin_id
+                done += 1
+            if pbar:
+                pbar.update(len(batch))
+            elif done % 1000 == 0 or done == total:
+                log.info(
+                    "  %d/%d features  (coarse=%d  fine=%d)",
+                    done, total, len(seen_coarse), len(seen_fine),
+                )
+    if pbar:
+        pbar.close()
+    log.info(
+        "  %d/%d features  (coarse=%d  fine=%d)",
+        done, total, len(seen_coarse), len(seen_fine),
+    )
 
     log.info("Admin registry: %d unique triples", registry.count)
     log.info("Coarse (res6) cells: %d", len(seen_coarse))
@@ -485,7 +484,7 @@ def build(geojson_path: str, output_path: str) -> None:
 
     admin_bytes = registry.admin_table_bytes()
     log.info(
-        "Admin table: %d entries × 5 bytes = %d bytes",
+        "Admin table: %d entries × 6 bytes = %d bytes",
         registry.count, len(admin_bytes),
     )
 
@@ -548,7 +547,7 @@ def _verify_file(path: str) -> None:
     assert version == 1,     f"Unexpected version: {version}"
     assert l10_dir % 4 == 0, "L10 directory not 4-byte aligned"
     assert l12_dir % 4 == 0, "L12 directory not 4-byte aligned"
-    # Admin entries are 5 bytes each; no power-of-two alignment constraint.
+    # Admin entries are 6 bytes each; no power-of-two alignment constraint.
 
     file_size = os.path.getsize(path)
     assert name_off < file_size, "Name table offset beyond EOF"
@@ -576,13 +575,18 @@ def main() -> None:
         default="s2_geo.bin",
         help="Output binary file path.",
     )
+    parser.add_argument(
+        "--workers", "-j",
+        type=int, default=0,
+        help="Number of parallel workers (0 = auto).",
+    )
     args = parser.parse_args()
 
     if not os.path.isfile(args.geojson):
         print(f"Error: file not found: {args.geojson}", file=sys.stderr)
         sys.exit(1)
 
-    build(args.geojson, args.output)
+    build(args.geojson, args.output, args.workers)
 
 
 if __name__ == "__main__":

@@ -21,9 +21,11 @@ search works correctly.
 """
 
 import json
+import multiprocessing
 import os
 import struct
 import sys
+from concurrent.futures import ProcessPoolExecutor
 import zstandard as zstd
 import h3
 from shapely.geometry import shape, Polygon, MultiPolygon
@@ -58,10 +60,10 @@ def int_to_cell(n: int) -> str:
 # Property extraction helpers
 # ---------------------------------------------------------------------------
 
-_COUNTRY_KEYS = ["shapeGroup", "shapeISO", "ISO", "ISO_A3", "GID_0", "ADM0_A3", "PROV_CODE"]
-_ADM1_KEYS    = ["ADM1_NAME", "ADM1NAME", "adm1name", "NAME_1", "VARNAME_1",
+_COUNTRY_KEYS = ["country", "shapeGroup", "shapeISO", "ISO", "ISO_A3", "GID_0", "ADM0_A3", "PROV_CODE"]
+_ADM1_KEYS    = ["adm1", "ADM1_NAME", "ADM1NAME", "adm1name", "NAME_1", "VARNAME_1",
                   "GID_1", "shapeName1", "ADM1"]
-_ADM2_KEYS    = ["shapeName", "NAME_2", "VARNAME_2", "GID_2", "shapeName2",
+_ADM2_KEYS    = ["adm2", "shapeName", "NAME_2", "VARNAME_2", "GID_2", "shapeName2",
                   "ADM2", "district"]
 
 
@@ -143,9 +145,10 @@ class NameRegistry:
     """
     Manages per-country lookup tables for ADM1 and ADM2 names.
 
-    country_id      : sequential 0-based integer (fits uint8, max 255)
-    state_offset    : per-country sequential 0-based integer (fits uint8, max 255)
-    district_offset : per-country sequential 0-based integer (fits uint16, max 65535)
+    Bit layout for packed_meta (uint32):
+      bits 31-22: country_id      (10 bits, max 1023)
+      bits 21-14: state_offset    ( 8 bits, max  255, per-country)
+      bits 13-0:  district_offset (14 bits, max 16383, per-country)
     """
 
     def __init__(self):
@@ -170,8 +173,8 @@ class NameRegistry:
     def _get_or_add_country(self, code: str) -> int:
         if code not in self._country_id:
             cid = len(self._country_names)
-            if cid > 255:
-                raise ValueError(f"Country count exceeds 255: {code!r}")
+            if cid > 1023:
+                raise ValueError(f"Country count exceeds 1023: {code!r}")
             self._country_id[code] = cid
             self._country_names.append(code)
             self._adm1.append({})
@@ -196,9 +199,9 @@ class NameRegistry:
         mapping = self._adm2[cid]
         if name not in mapping:
             idx = len(self._adm2_names[cid])
-            if idx > 65535:
+            if idx > 16383:
                 raise ValueError(
-                    f"ADM2 count for {self._country_names[cid]!r} exceeds 65535"
+                    f"ADM2 count for {self._country_names[cid]!r} exceeds 16383"
                 )
             mapping[name] = idx
             self._adm2_names[cid].append(name)
@@ -218,8 +221,10 @@ class NameRegistry:
 # ---------------------------------------------------------------------------
 
 def pack_meta(country_id: int, state_offset: int, district_offset: int) -> int:
-    """Encode three identifiers into a single uint32 per the spec bit layout."""
-    return (country_id << 24) | (state_offset << 16) | district_offset
+    """Encode three identifiers into a single uint32.
+    Bits 31-22: country_id (10 bits), bits 21-14: state (8 bits), bits 13-0: district (14 bits).
+    """
+    return (country_id << 22) | (state_offset << 14) | district_offset
 
 
 # ---------------------------------------------------------------------------
@@ -241,56 +246,72 @@ def load_features(path: str) -> list:
     return features
 
 
-def build(geojson_path: str):
+def _process_feature_h3(feature):
+    """Worker: return (country, adm1, adm2, coarse_cells, fine_cells) for one feature."""
+    raw_geom = feature.get("geometry")
+    if raw_geom is None:
+        return None
+    props = feature.get("properties") or {}
+    country, adm1, adm2 = extract_names(props)
+    geom = shape(raw_geom)
+    polygons = list(_ensure_polygon_list(geom))
+    if not polygons:
+        return None
+    coarse = set()
+    fine = set()
+    for poly in polygons:
+        coarse.update(cells_for_polygon(poly, RES_COARSE))
+        fine.update(cells_for_polygon(poly, RES_FINE))
+    return country, adm1, adm2, coarse, fine
+
+
+def build(geojson_path: str, workers: int = 0):
     features = load_features(geojson_path)
     registry = NameRegistry()
 
     # cell_id (int) → packed_meta (int)
-    # Keys are integer H3 IDs so sorting gives the correct numeric order for
-    # binary search.  Cells at both res 5 and res 6 can coexist.
     cell_map: dict[int, int] = {}
 
     total = len(features)
+    if workers == 0:
+        workers = min(multiprocessing.cpu_count(), 8)
+    print(f"  Using {workers} workers")
+
     try:
         from tqdm import tqdm as _tqdm
-        _iter = _tqdm(enumerate(features), total=total, desc="  H3 cells", unit="feat")
+        pbar = _tqdm(total=total, desc="  H3 cells", unit="feat")
     except ImportError:
-        _iter = enumerate(features)
-    for idx, feature in _iter:
-        if not hasattr(_iter, 'update') and idx % 200 == 0:
-            print(f"  Processing feature {idx}/{total} …", end="\r", flush=True)
+        pbar = None
 
-        raw_geom = feature.get("geometry")
-        if raw_geom is None:
-            continue
-
-        props   = feature.get("properties") or {}
-        country, adm1, adm2 = extract_names(props)
-
-        try:
-            cid, sid, did = registry.register(country, adm1, adm2)
-        except ValueError as exc:
-            print(f"\n  WARNING: skipping feature {idx}: {exc}")
-            continue
-
-        meta = pack_meta(cid, sid, did)
-
-        geom = shape(raw_geom)
-        polygons = list(_ensure_polygon_list(geom))
-        if not polygons:
-            continue
-
-        # --- coarse fill at res 5 (global baseline) ------------------------
-        for poly in polygons:
-            for cell_int in cells_for_polygon(poly, RES_COARSE):
-                cell_map[cell_int] = meta
-
-        # --- fine fill at res 6 (overrides res-5 entries for same cells) ---
-        # The query ladder tries res 6 first, then falls back to the res-5
-        # parent.  Storing res-6 cells gives higher boundary accuracy.
-        for poly in polygons:
-            for cell_int in cells_for_polygon(poly, RES_FINE):
-                cell_map[cell_int] = meta
+    chunk = 200
+    done = 0
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        for start in range(0, total, chunk):
+            batch = features[start:start + chunk]
+            results = list(executor.map(_process_feature_h3, batch))
+            for result in results:
+                if result is None:
+                    done += 1
+                    continue
+                country, adm1, adm2, coarse, fine = result
+                try:
+                    cid, sid, did = registry.register(country, adm1, adm2)
+                except ValueError as exc:
+                    print(f"\n  WARNING: skipping feature {done}: {exc}")
+                    done += 1
+                    continue
+                meta = pack_meta(cid, sid, did)
+                for cell_int in coarse:
+                    cell_map[cell_int] = meta
+                for cell_int in fine:
+                    cell_map[cell_int] = meta
+                done += 1
+            if pbar:
+                pbar.update(len(batch))
+            elif done % 1000 == 0 or done == total:
+                print(f"  {done}/{total} …", end="\r", flush=True)
+    if pbar:
+        pbar.close()
 
     print(f"\n  Total cells (res-5 + res-6): {len(cell_map):,}")
 
@@ -365,7 +386,10 @@ def build(geojson_path: str):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python builder.py <geojson_file>")
-        sys.exit(1)
-    build(sys.argv[1])
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("geojson")
+    parser.add_argument("--workers", "-j", type=int, default=0,
+                        help="Parallel workers (0=auto)")
+    args = parser.parse_args()
+    build(args.geojson, args.workers)

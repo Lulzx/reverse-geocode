@@ -387,12 +387,30 @@ fn buildCoarseGrid(alloc: Allocator, index: *const SpatialIndex) !CoarseGrid {
     defer alloc.free(cell_admin);
     @memset(cell_admin, OCEAN_SENTINEL);
 
+    // Quarter-cell offset for sub-sampling (0.0625° ≈ 7 km).
+    const Q: f64 = GRID_CELL_DEG * 0.25;
+
     var last_pct: usize = 0;
     for (0..GRID_ROWS) |row| {
-        const lat: f64 = 90.0 - (@as(f64, @floatFromInt(row)) + 0.5) * GRID_CELL_DEG;
+        const lat_c: f64 = 90.0 - (@as(f64, @floatFromInt(row)) + 0.5) * GRID_CELL_DEG;
         for (0..GRID_COLS) |col| {
-            const lon: f64 = -180.0 + (@as(f64, @floatFromInt(col)) + 0.5) * GRID_CELL_DEG;
-            if (index.query(lon, lat)) |aid| cell_admin[row * GRID_COLS + col] = aid;
+            const lon_c: f64 = -180.0 + (@as(f64, @floatFromInt(col)) + 0.5) * GRID_CELL_DEG;
+            // Sample center first; fall back to 4 quadrant sub-centers so that
+            // coastal / island cells whose centroid falls in the ocean are still
+            // classified as land.  First hit wins (center takes priority).
+            const samples = [5][2]f64{
+                .{ lon_c,     lat_c     },
+                .{ lon_c - Q, lat_c - Q },
+                .{ lon_c + Q, lat_c - Q },
+                .{ lon_c - Q, lat_c + Q },
+                .{ lon_c + Q, lat_c + Q },
+            };
+            for (samples) |pt| {
+                if (index.query(pt[0], pt[1])) |aid| {
+                    cell_admin[row * GRID_COLS + col] = aid;
+                    break;
+                }
+            }
         }
         const pct = (row + 1) * 100 / GRID_ROWS;
         if (pct >= last_pct + 5) {

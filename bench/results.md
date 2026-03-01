@@ -195,3 +195,34 @@ The root cause: Python ints have arbitrary precision, so numpy cannot know
 whether to treat them as int32, int64, or something else. It defaults to a
 safe Python-level comparison loop. Always pass `np.uint32(v)` or `np.uint64(v)`
 when querying typed arrays.
+
+
+## Accuracy benchmark vs Nominatim (59 cities / 3 ocean control points)
+
+```
+python bench/accuracy.py   # uses cached Nominatim results
+```
+
+Test set: 56 land cities + 3 ocean control points. Nominatim (OSM) used as
+ground truth. Correctness = matching ISO 3166-1 alpha-2 country code.
+
+| Geocoder | Correct | Accuracy | Notes |
+|----------|---------|----------|-------|
+| z0       | 51/56   | 91%      | 5 misses: Singapore (MYS cell), Athens, Nuuk, Port Louis, Praia (GADM gaps) |
+| s2       | 55/56   | 98%      | 1 miss: Istanbul (Fatih peninsula — cell centroid in Bosphorus) |
+| h3       | 51/56   | 91%      | 5 misses: Istanbul, Reykjavik, Auckland, Nuuk, Praia (coastal/island centroids) |
+
+### Changes to reach these numbers
+
+1. **z0** — 5-point cell sampling: centre + 4 quadrant sub-centres per grid cell
+   so coastal cells whose centroid is ocean still get classified as land.
+2. **s2 / h3** — Rebuilt from `adm2_render.geojson` (GADM ADM2, 180 countries)
+   instead of geoBoundaries; fixed property-key lookups so country/adm1/adm2
+   are correctly extracted.
+3. **Natural Earth supplement** — 689 ADM1 features for 88 countries absent from
+   GADM (SGP, GRL, MUS, CPV, MDV, SYC, …) merged into the GeoJSON source.
+4. **s2 algorithm** — Switched coarse-table fill from "interior cells only"
+   (mp.contains) to centroid-in-polygon (h3shape_to_cells), which prevents
+   district-boundary cells from being silently dropped.
+5. **Parallel build** — Both s2 and h3 builders now use `ProcessPoolExecutor`
+   (`--workers` / `-j` flag, default auto) for a ~4-6× faster build.

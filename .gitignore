@@ -1,6 +1,7 @@
 # ── Build artefacts & large data files ───────────────────────────────────────
 *.bin
 *.geojson
+ne_admin*.json
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
