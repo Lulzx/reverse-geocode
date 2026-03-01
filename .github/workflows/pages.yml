@@ -22,25 +22,14 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
-      - name: Build z0
-        working-directory: z0/ui
-        run: bun install && bun run build
-
-      - name: Build s2
-        working-directory: s2/ui
-        run: bun install && bun run build
-
-      - name: Build h3
-        working-directory: h3/ui
+      - name: Build unified app
+        working-directory: ui
         run: bun install && bun run build
 
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp -r z0/ui/dist/. _site/z0/
-          cp -r s2/ui/dist/. _site/s2/
-          cp -r h3/ui/dist/. _site/h3/
-          cp index.html _site/index.html
+          cp -r ui/dist/. _site/
           cp favicon.svg _site/favicon.svg
 
       - uses: actions/upload-pages-artifact@v3
