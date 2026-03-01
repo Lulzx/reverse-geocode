@@ -20,26 +20,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: |
-            z0/ui/package-lock.json
-            s2/ui/package-lock.json
-            h3/ui/package-lock.json
+      - uses: oven-sh/setup-bun@v2
 
       - name: Build z0
         working-directory: z0/ui
-        run: npm ci && npm run build
+        run: bun install && bun run build
 
       - name: Build s2
         working-directory: s2/ui
-        run: npm ci && npm run build
+        run: bun install && bun run build
 
       - name: Build h3
         working-directory: h3/ui
-        run: npm ci && npm run build
+        run: bun install && bun run build
 
       - name: Assemble site
         run: |
