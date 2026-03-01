@@ -19,10 +19,10 @@ time.
         |                   |                         |
         v                   v                         v
      z0/                 s2/                        h3/
-     RGEO0003            RGEO0001                   LKHA0001
+     RGEO0004            RGEO0001                   LKHA0001
      Zig builder         Python builder             Python builder
      Morton boundary     S2 block binary search     H3 flat binary search
-     20 MB               27 MB                      13 MB
+     9.3 MB              27 MB                      13 MB
 
 
 ## The problem
@@ -131,7 +131,7 @@ every subsequent query in pure JavaScript.
 <!-- prettier table -->
                  z0          s2          h3
     -----------------------------------------------
-    index size   20 MB       27 MB       13 MB
+    index size   9.3 MB      27 MB       13 MB
     interior     ~1.6 µs     ~1.9 µs     ~1.6 µs
     boundary     ~2.4 µs     ~1.9 µs     ~2.7 µs
     ocean        ~0.4 µs     ~2.6 µs     ~3.5 µs
@@ -146,39 +146,45 @@ consistent land geocoder but pays ~2.6 µs for ocean. h3 uses a fallback
 so ocean costs ~3.5 µs.
 
 
-## z0 binary format — RGEO0003
+## z0 binary format — RGEO0004
 
-    Header (64 bytes)
-      [0:8]   magic "RGEO0003"
+RGEO0004 replaced RGEO0003's flat Morton-block table with a palette+local-key
+grouped stream, cutting the index from 19.7 MB to 9.3 MB (2.1×).
+
+    Header (40 bytes)
+      [0:8]   magic "RGEO0004"
       [8:12]  format version (u32)
-      [12:16] build timestamp (u32)
-      [16:20] bitmap offset
-      [20:24] rank table offset
-      [24:28] values array offset
-      [28:32] land cell count
-      [32:36] Morton block offset
-      [36:40] Morton directory offset
-      [40:44] Morton record count
-      [44:48] Morton block count
-      [48:52] admin table offset
-      [52:56] name table offset
-      [56:64] reserved
+      [12:16] bitmap offset
+      [16:20] rank table offset
+      [20:24] values array offset
+      [24:28] land cell count
+      [28:32] boundary index offset
+      [32:36] stream offset
+      [36:40] boundary group count
 
     Sections
-      bitmap       129 600 B   1-bit land/ocean flag per 0.25° cell
-      rank table     8 100 B   cumulative popcount every 512 bits
-      values        ~978 KB   u32 per land cell: admin_id or sentinel
-      Morton blocks ~14 MB    8 records × 8 B (u32 morton + u32 admin_id)
-      Morton dir    ~900 KB   u32 first-morton per block
-      admin table   ~2.8 MB   u16 country + u16 adm1 + u32 adm2 per entry
-      name table    ~1.4 MB   zstd-compressed JSON {countries,adm1s,adm2s}
+      bitmap         129 600 B   1-bit land/ocean flag per 0.25° cell
+      rank table       8 100 B   cumulative popcount every 512 bits
+      values          ~434 KB   u24 per land cell: admin_id or sentinel
+      boundary index  ~717 KB   u32 stream-relative byte offset per group
+      stream           ~8.5 MB  variable-length encoded groups (see below)
 
-    Sentinels
-      0xFFFFFFFF  BOUNDARY — Morton table lookup required
-      0xFFFFFFFE  OCEAN    — point in a coastal cell with no land polygon
+    Sentinels (u24)
+      0xFFFFFF  BOUNDARY — fine group decode required
+      0xFFFFFE  OCEAN    — coastal cell with no land polygon
 
     Morton quantisation: 12-bit (4096 steps per axis, ~2.4 km resolution)
-    Block size: 64 bytes = 8 records × 8 bytes, one L1 cache line
+
+    Group format (one group per boundary coarse cell):
+      base_lq   u16 LE   latitude  quantised base (0–4095)
+      base_aq   u16 LE   longitude quantised base (0–4095)
+      pal_size  u8       palette entry count (1–16)
+      rec_count u8       number of fine records in this group
+      palette   pal_size × u24 LE   distinct admin_ids in this group
+      keys      rec_count × u8      local key = ((lq-base_lq)<<4)|(aq-base_aq)
+      indices   ceil(rec_count × idx_bits / 8) B   MSB-first palette indices
+
+    idx_bits: 0 if pal_size≤1, 2 if pal_size≤4, 4 if pal_size≤16
 
 
 ## Data pipeline
@@ -197,8 +203,11 @@ zig build -Drelease=true
 ./zig-out/bin/builder z0_prep_finest.bin z0_geo_finest.bin
 # → 19.7 MB RGEO0003 binary in ~32 s
 
-python query.py 48.8566 2.3522 z0_geo_finest.bin
-# → country: FRA  adm1: Paris, 6e arrondissement  adm2: Paris, 6e arrondissement
+python convert_rgeo4.py z0_geo_finest.bin z0_geo_v4.bin
+# → 9.3 MB RGEO0004 binary (2.1× smaller)
+
+python query4.py 48.8566 2.3522 z0_geo_v4.bin
+# → (48.8566, 2.3522) -> admin_id 12345
 
 # 3. Build render GeoJSON
 python make_render_geojson.py z0/z0_prep_finest.bin ui/public/data/adm2_render.geojson
