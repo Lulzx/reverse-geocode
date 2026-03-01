@@ -41,7 +41,7 @@ containment) at build time and collapsing the result into a compact spatial
 index that the browser can search with simple arithmetic.
 
 
-## Data source
+## Data sources
 
 **GADM 4.1** (Global Administrative Areas) provides ADM2-level boundaries for
 the entire world: districts, counties, prefectures — the second level of
@@ -55,6 +55,14 @@ GADM was chosen over alternatives like geoBoundaries because:
 - it has global coverage with no significant gaps
 - the polygons are consistent in structure
 - it distinguishes country / adm1 / adm2 cleanly
+
+**Natural Earth** (10m ADM1) supplements GADM for the 88 countries absent from
+it — small island nations and territories such as Singapore, Greenland,
+Mauritius, Cape Verde, Maldives, Seychelles, and many overseas territories.
+`merge_ne_supplement.py` merges the two datasets into a single GeoJSON
+(`adm2_render_supplemented.geojson`, 47 894 features) which the s2 and h3
+builders use as their source. Without this supplement those countries would
+return no result for any coordinate.
 
 
 ## The basemap (adm2_render.geojson)
@@ -138,16 +146,41 @@ every subsequent query in pure JavaScript with no network calls.
 <!-- prettier table -->
                  z0          s2          h3
     -----------------------------------------------
-    index size   11 MB       55 MB       10 MB
-    interior     ~300 ns     ~1 µs       ~3 µs
-    boundary     ~1.5 µs     ~2 µs       ~3 µs
+    index size   11 MB       33 MB       10 MB
+    interior     ~1.6 µs     ~1.9 µs     ~1.6 µs
+    boundary     ~2.4 µs     ~1.9 µs     ~2.7 µs
+    ocean        ~0.4 µs     ~2.6 µs     ~3.5 µs
     key type     uint32      uint32      uint64
     key space    Morton      H3 compact  H3 raw
     levels        2           2           1 + fallback
     builder      Zig         Python      Python
     JS BigInt?   no          no          yes
 
-See `bench/` for methodology and raw numbers.
+Measured with `bench/bench.py` (5 000 iterations, 100 warmup, Apple Silicon):
+
+    city                               z0        s2        h3
+    ---------------------------------------------------------
+    São Paulo, Brazil               2.42µs    1.95µs    2.65µs
+    London, UK                      2.39µs    1.92µs    2.67µs
+    Tokyo, Japan                    1.53µs    2.82µs    2.68µs
+    Nairobi, Kenya                  1.59µs    1.92µs    1.60µs
+    Cairo, Egypt                    1.61µs    1.91µs    1.61µs
+    Sydney, Australia               1.54µs    1.93µs    1.62µs
+    Moscow, Russia                  1.65µs    1.95µs    1.63µs
+    Los Angeles, USA                2.41µs    1.85µs    2.77µs
+    Mumbai, India                   1.62µs    1.90µs    1.64µs
+    Cape Town, South Africa         1.64µs    1.90µs    2.77µs
+    Tripoint DE/FR/CH               1.61µs    1.90µs    1.62µs
+    Kaliningrad, Russia             2.43µs    1.92µs    2.77µs
+    Mid-Atlantic (ocean)            0.38µs    2.59µs    3.43µs
+    South Pacific (ocean)           0.39µs    2.62µs    3.50µs
+
+z0 exits early on ocean via the coarse grid (0.4 µs). s2 is the most
+consistent land geocoder (1.85–1.95 µs regardless of location) but pays
+~2.6 µs for ocean. h3 uses a three-resolution fallback so ocean costs
+~3.5 µs.
+
+See `bench/` for full methodology.
 
 
 ## Accuracy
